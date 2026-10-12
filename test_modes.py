@@ -13,10 +13,10 @@ def send(side, *params):
 
 
 TESTS = [
-    ("1: R2 - resistencia crescente (10 zonas, fraco -> forte)", 2, [25, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8]),
-    ("2: L2 - vibracao ABS (zonas vibrando, topo forte)", 1, [26, 20, 3, 3, 3, 3, 3, 3, 3, 8, 8, 8]),
-    ("3: R2 - vibracao simples 30 Hz", 2, [23, 0, 6, 30]),
-    ("4: L2 - pedal progressivo (slope)", 1, [24, 0, 9, 1, 8]),
+    ("1: R2 - rising resistance (10 zones, weak -> strong)", 2, [25, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8]),
+    ("2: L2 - ABS vibration (zones pulsing, firm bottom)", 1, [26, 20, 3, 3, 3, 3, 3, 3, 3, 8, 8, 8]),
+    ("3: R2 - plain 30 Hz vibration", 2, [23, 0, 6, 30]),
+    ("4: L2 - progressive pedal (slope)", 1, [24, 0, 9, 1, 8]),
 ]
 
 for rnd in range(2):
@@ -29,4 +29,4 @@ for rnd in range(2):
         time.sleep(6)
         send(side, 0)
         time.sleep(1)
-print("fim")
+print("done")

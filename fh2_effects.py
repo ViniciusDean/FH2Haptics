@@ -118,7 +118,7 @@ class FH2Parser(Parser):
             y = curve(lock, BRAKE_LOCK_CURVE)
             amp = _clamp(max(y, 0.2) / 0.9 * 8, 1, 8)
             zones = [max(c["lock_pedal"], amp if i < 7 else c["lock_pedal"]) for i in range(10)]
-            self.debug = f"L2 TRAVADA {lock:.1f}"
+            self.debug = f"L2 LOCKED {lock:.1f}"
             return ("dsx", [MULTI_VIBRATION, _clamp(c["lock_freq"], 1, 255), *zones])
 
         self.debug = "L2 pedal"
@@ -144,7 +144,7 @@ class FH2Parser(Parser):
             freq = c["spin_freq_min"] + (c["spin_freq_max"] - c["spin_freq_min"]) * loss
             light = 1.0 - c["spin_light"] * loss
             zones = [max(amp, _clamp(b * light, 0, 8)) for b in base]
-            self.debug += f" | R2 PATINA {loss:.2f} ({spin:.2f}/{slide:.0f}°)"
+            self.debug += f" | R2 SPIN {loss:.2f} ({spin:.2f}/{slide:.0f}°)"
             return ("dsx", [MULTI_VIBRATION, _clamp(freq, 1, 255), *zones])
 
         self.debug += " | R2 normal"

@@ -1,83 +1,81 @@
 # FH2 Haptics
 
-Gatilhos adaptativos do DualSense para o **Forza Horizon 2** rodando no PC pelo **[Azimuth](https://almost-there-games.itch.io/azimuth)**.
+DualSense adaptive-trigger effects for **Forza Horizon 2** running on PC through **[Azimuth](https://almost-there-games.itch.io/azimuth)**.
 
-O FH2 nunca teve telemetria "Data Out". Este projeto lê a física do carro direto da memória do `azimuth.exe` (somente leitura, nenhum arquivo do jogo é alterado) e transforma isso em efeitos no L2/R2, enviados ao **[DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2)**, que continua cuidando da emulação de controle de Xbox.
+FH2 never had "Data Out" telemetry. This project reads the player car's physics straight from `azimuth.exe` memory (read-only; no game file is modified) and turns it into L2/R2 effects, sent to **[DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2)**, which keeps handling the Xbox controller emulation.
 
-> *English: DualSense adaptive-trigger effects for Forza Horizon 2 running through the Azimuth launcher. Reads the player car's physics from `azimuth.exe` memory (read-only) and drives the triggers through DualSenseY's DSX-compatible UDP API.*
+## Effects
 
-## Efeitos
-
-| Gatilho | Situação | Efeito |
+| Trigger | Situation | Effect |
 |---|---|---|
-| L2 | Freio normal | Pedal progressivo: endurece ao longo do curso |
-| L2 | ABS atuando (flag do próprio jogo) | Pulsação de ABS com o fundo do curso firme |
-| L2 | Roda travada sem ABS | Pedal cede e treme, na intensidade da curva original da Turn 10 |
-| R2 | Normal | Resistência leve e progressiva |
-| R2 | Roda patinando ou traseira saindo de lado | Vibra mais forte e mais rápido quanto maior a perda de tração, e o gatilho fica mais leve |
-| R2 | Troca de marcha | Tranco curto |
-| L2/R2 | Batidas | Tranco forte |
-| Lightbar | — | Conta-giros (verde → vermelho, pisca no corte) |
+| L2 | Normal braking | Progressive pedal that stiffens along the travel |
+| L2 | ABS active (the game's own ABS flag) | ABS pulsing with a firm wall at the bottom of the travel |
+| L2 | Wheel locked, no ABS | Pedal gives way and judders, following Turn 10's original curve |
+| R2 | Normal | Light progressive resistance |
+| R2 | Wheelspin or rear stepping out | Stronger and faster vibration as traction loss grows; the trigger gets lighter |
+| R2 | Gear change | Short kick |
+| L2/R2 | Collisions | Hard jolt |
+| Lightbar | — | Tachometer (green → red, flashes at the limiter) |
 
-Dados usados: velocidade, RPM, marcha, acelerador, freio, freio de mão, volante, vetor de velocidade, orientação, flag de ABS e o escorregamento normalizado de cada pneu, calculado pelo próprio jogo. As curvas de vibração de travamento seguem o `media/ControllerHaptics.xml` do jogo, que é a configuração dos impulse triggers do Xbox One.
+Data used: speed, RPM, gear, throttle, brake, handbrake, steering, velocity vector, orientation, ABS flag, and each tire's normalized slip as computed by the game itself. The lock-up vibration curves follow the game's `media/ControllerHaptics.xml`, which is the Xbox One impulse-trigger configuration.
 
-## Requisitos
+## Requirements
 
 - Windows 10/11
-- Forza Horizon 2 **1.0.0.64**, dump da **sua própria cópia**, rodando no **Azimuth 0.9.7**
-- DualSense **no cabo USB** ou **sem fio por um adaptador que se apresenta como USB**. Eu uso o **[DS5 Bridge](https://github.com/SundayMoments/DS5_Bridge)** num **Raspberry Pi Pico 2 W**. Pelo Bluetooth comum do Windows, a vibração por áudio não funciona, porque ela precisa do modo USB.
-- [DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2) aberto, com o servidor UDP na porta **6969** (padrão)
-- [HorizonHaptics](https://github.com/haritha99ch/HorizonHaptics) clonado **na mesma pasta pai** deste projeto. A lógica base de efeitos e a lightbar vêm dele. Rode o `run.bat` dele uma vez para criar o `.venv` e depois **feche-o**, porque ele escreve no controle direto e brigaria com o DSY.
+- Forza Horizon 2 **1.0.0.64**, dumped from **your own copy**, running on **Azimuth 0.9.7**
+- DualSense **over USB**, or **wireless through an adapter that shows up as USB**. I use **[DS5 Bridge](https://github.com/SundayMoments/DS5_Bridge)** on a **Raspberry Pi Pico 2 W**. Over plain Windows Bluetooth, audio haptics don't work because they need USB mode.
+- [DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2) running with its UDP server on port **6969** (default)
+- [HorizonHaptics](https://github.com/haritha99ch/HorizonHaptics) cloned **next to this project**. The base effect logic and the lightbar come from it. Run its `run.bat` once to create the `.venv`, then **close it**: it writes to the controller directly and would fight with DSY.
 
 ```
 Documents\
 ├── HorizonHaptics\   ← github.com/haritha99ch/HorizonHaptics
-└── FH2Haptics\       ← este repositório
+└── FH2Haptics\       ← this repository
 ```
 
-Se o HorizonHaptics estiver em outro lugar, defina a variável `HORIZONHAPTICS_DIR`.
+If HorizonHaptics lives somewhere else, set the `HORIZONHAPTICS_DIR` environment variable.
 
-## Uso
+## Usage
 
-1. Abra o DualSenseY e o jogo pelo Azimuth.
-2. Dê dois cliques em `run.bat`.
-3. O console mostra velocidade, RPM, marcha, derrapagem e qual efeito está ativo.
+1. Start DualSenseY and the game through Azimuth.
+2. Double-click `run.bat`.
+3. The console shows speed, RPM, gear, slip and the active effect.
 
-`test_modes.py` testa os modos de gatilho do DSY um por um, para confirmar que a comunicação funciona.
+`test_modes.py` plays each DSY trigger mode in turn, to check that the connection works.
 
-## Ajustes
+## Tuning
 
-Na primeira execução é criado um `settings.json` com todos os parâmetros. Estes são os principais:
+A `settings.json` with every parameter is created on the first run. The main ones:
 
-- `brake_profile`: dureza do pedal do freio, zona por zona (0–8, do topo ao fundo do curso)
-- `abs_freq`, `abs_amp`, `abs_wall`: pulsação do ABS
-- `spin_start` / `spin_full`: patinada de roda onde a vibração do R2 começa e onde atinge o máximo
-- `slide_start_deg` / `slide_full_deg`: ângulo de derrapagem lateral onde a vibração começa e onde atinge o máximo
-- `spin_amp_min` / `spin_amp_max`, `spin_freq_min` / `spin_freq_max`: força e frequência da vibração do R2
-- `shift_kick`: liga ou desliga o tranco de troca de marcha
+- `brake_profile`: brake pedal stiffness, zone by zone (0–8, top to bottom of the travel)
+- `abs_freq`, `abs_amp`, `abs_wall`: ABS pulsing
+- `spin_start` / `spin_full`: wheelspin where the R2 vibration starts and where it reaches full strength
+- `slide_start_deg` / `slide_full_deg`: sideways slide angle where the vibration starts and where it reaches full strength
+- `spin_amp_min` / `spin_amp_max`, `spin_freq_min` / `spin_freq_max`: R2 vibration strength and frequency
+- `shift_kick`: turns the gear-change kick on or off
 
-A intensidade geral e a lightbar seguem as configurações salvas do HorizonHaptics (`~/.config/horizonhaptics/settings.json`).
+Overall intensity and the lightbar follow HorizonHaptics' saved settings (`~/.config/horizonhaptics/settings.json`).
 
-## Como funciona
+## How it works
 
-- O Azimuth carrega o executável do FH2 no endereço fixo `0x140000000`. Um ponteiro estático (`0x14365AE10 → +0x1E8`) leva ao objeto `ForzaCar` do jogador. Os tipos são validados pelas vtables do RTTI, e o ponteiro `+0x4C08` leva ao estado de física.
-- Os deslocamentos foram achados por RTTI, correlação com a posição real dos gatilhos e análise de gravações. Estão todos comentados no topo de `fh2_haptics.py`.
-- Os efeitos são enviados nos modos nativos da Sony que o DSY aceita pelo UDP: `MULTIPLE_POSITION_FEEDBACK`, `MULTIPLE_POSITION_VIBRATION` e `VIBRATION`.
+- Azimuth maps the FH2 executable at the fixed address `0x140000000`. A static pointer (`0x14365AE10 → +0x1E8`) leads to the player's `ForzaCar` object. Types are validated through their RTTI vtables, and `+0x4C08` leads to the physics state.
+- Offsets were found through RTTI, correlation with the real trigger positions, and analysis of recorded driving. They are all documented at the top of `fh2_haptics.py`.
+- Effects are sent in the native Sony modes DSY accepts over UDP: `MULTIPLE_POSITION_FEEDBACK`, `MULTIPLE_POSITION_VIBRATION` and `VIBRATION`.
 
-Outras versões do jogo ou do Azimuth provavelmente mudam os endereços.
+Other game or Azimuth versions will most likely move the addresses.
 
-## Créditos
+## Credits
 
-- **[Azimuth](https://almost-there-games.itch.io/azimuth)**, de Almost There Games: o launcher que roda o FH2 de Xbox One no PC. Sem ele nada disso existe.
-- **[DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2)**, de WujekFoliarz: emulação de controle e a API UDP usada para controlar os gatilhos.
-- **[DS5 Bridge](https://github.com/SundayMoments/DS5_Bridge)**, de SundayMoments (baseado no [DS5Dongle](https://github.com/awalol/DS5Dongle), de awalol): adaptador sem fio com Raspberry Pi Pico 2 W que faz o DualSense funcionar como se estivesse no USB.
-- **[HorizonHaptics](https://github.com/haritha99ch/HorizonHaptics)**, de Haritha Rathnayake (MIT): lógica base de efeitos, lightbar e configurações.
-- **Turn 10 / Playground Games**: curvas originais de vibração dos gatilhos (`ControllerHaptics.xml`).
+- **[Azimuth](https://almost-there-games.itch.io/azimuth)** by Almost There Games: the launcher that runs the Xbox One version of FH2 on PC. None of this exists without it.
+- **[DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2)** by WujekFoliarz: controller emulation and the UDP API used to drive the triggers.
+- **[DS5 Bridge](https://github.com/SundayMoments/DS5_Bridge)** by SundayMoments (based on [DS5Dongle](https://github.com/awalol/DS5Dongle) by awalol): Raspberry Pi Pico 2 W wireless adapter that makes the DualSense work as if it were on USB.
+- **[HorizonHaptics](https://github.com/haritha99ch/HorizonHaptics)** by Haritha Rathnayake (MIT): base effect logic, lightbar and settings.
+- **Turn 10 / Playground Games**: the original trigger vibration curves (`ControllerHaptics.xml`).
 
-## Aviso
+## Disclaimer
 
-Projeto de fãs, sem afiliação com Microsoft, Playground Games, Turn 10, Almost There Games ou os autores do DualSenseY e do DS5 Bridge. Nenhum arquivo do jogo é distribuído aqui. Use apenas com uma cópia que você possui. Forza Horizon é marca registrada da Microsoft.
+Fan project, not affiliated with Microsoft, Playground Games, Turn 10, Almost There Games, or the authors of DualSenseY and DS5 Bridge. No game files are distributed here. Only use it with a copy you own. Forza Horizon is a trademark of Microsoft.
 
-## Licença
+## License
 
 [MIT](LICENSE)

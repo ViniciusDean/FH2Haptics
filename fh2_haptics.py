@@ -238,7 +238,7 @@ def main():
     preferences.load(t, b, g, s, tach)
     parser = FH2Parser(t, b, g, s, tach)
     game, dsy = FH2(), DSY()
-    print("FH2 Haptics: aguardando azimuth.exe ... (Ctrl+C para sair)")
+    print("FH2 Haptics: waiting for azimuth.exe ... (Ctrl+C to quit)")
     last_print = 0.0
     idle = False
     try:
@@ -259,15 +259,15 @@ def main():
                 last_print = now
                 st = "ON " if pkt.is_race_on else "off"
                 print(f"\r[{st}] {pkt.speed_kmh:6.1f} km/h  {pkt.current_engine_rpm:5.0f}/{game.max_rpm:5.0f} rpm  "
-                      f"marcha {pkt.gear}  acel {pkt.accel:3d} freio {pkt.brake:3d}  "
-                      f"slip F {pkt.front_slip:4.2f} T {pkt.rear_slip:4.2f}  "
+                      f"gear {pkt.gear}  thr {pkt.accel:3d} brk {pkt.brake:3d}  "
+                      f"slip F {pkt.front_slip:4.2f} R {pkt.rear_slip:4.2f}  "
                       f"{'ABS ' if getattr(pkt, 'abs_active', False) else ''}{parser.debug:<28}", end="", flush=True)
             time.sleep(1 / 120)
     except KeyboardInterrupt:
         pass
     finally:
         dsy.release()
-        print("\ntchau")
+        print("\nbye")
 
 
 if __name__ == "__main__":
