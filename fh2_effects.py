@@ -43,21 +43,63 @@ DEFAULTS = {
     "shift_kick": True,              # short R2 kick on gear change (Turn 10 OnShift)
     "shift_amp": 6,
     "shift_ms": 70,
+    # body haptics (DualSense actuators), synthesized from car data only
+    "haptics": {
+        "enabled": True,
+        "volume": 1.0,                 # master volume
+        "rumble": 1.0,                 # Turn 10 rumble layers (traction, bumps, hits, shift)
+        "engine": 0.12,                # engine growl (kept low so it does not mask the rest)
+        "engine_hz_idle": 30.0,        # growl frequency at idle ...
+        "engine_hz_max": 110.0,        # ... and at the limiter
+        # off asphalt, per surface class (from the game's surface id): texture amount and
+        # the Turn 10 SurfaceBumpiness input (0-0.12) that drives the rumble layers
+        "surfaces": {
+            "1": {"name": "dirt/gravel", "texture": 0.45, "bumpiness": 0.05},
+            "2": {"name": "grass", "texture": 0.2, "bumpiness": 0.025},
+            "other": {"name": "unknown", "texture": 0.3, "bumpiness": 0.03},
+        },
+        "surface_full_speed": 20.0,    # m/s where surface effects reach full strength
+        "detail": 0.5,                 # small road details on asphalt
+        "detail_floor": 0.08,          # suspension speed (m/s) ignored as smooth road
+        "detail_gain": 2.0,            # suspension speed above the floor -> detail amount
+        "detail_offroad": 0.3,         # share of the detail layer kept off asphalt
+        "object_hit": 1.0,             # thump when hitting objects (bollards, fences, signs)
+        "traction": 0.8,               # heavy rumble when the car loses traction (same index as R2)
+        "understeer": 0.5,             # light buzz when the front tires slide
+        "understeer_start": 0.4,       # front normalized slip where the buzz begins
+        "abs": 0.5,                    # ABS pulse on the body
+        "abs_hz": 14.0,
+        "hit_min": 2.0,                # impact (m/s change against the trend) that counts as a hit
+        "hit_scale": 40.0,             # impact (m/s) -> Turn 10 collision units
+        "landing": 0.8,                # thump when a hanging wheel lands
+        "landing_speed": 2.0,          # compression speed (m/s) of a hanging wheel that counts as a landing
+    },
 }
 
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 
 
 def load_settings():
-    cfg = dict(DEFAULTS)
+    """Defaults overlaid with settings.json; new keys are written back to the file."""
+    cfg = json.loads(json.dumps(DEFAULTS))
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as fh:
-            cfg.update(json.load(fh))
+            user = json.load(fh)
     except FileNotFoundError:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
-            json.dump(DEFAULTS, fh, indent=2)
+        user = {}
     except (OSError, ValueError):
-        pass
+        return cfg
+    for key, val in user.items():
+        if isinstance(val, dict) and isinstance(cfg.get(key), dict):
+            cfg[key].update(val)
+        else:
+            cfg[key] = val
+    if cfg != user:
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, indent=2)
+        except OSError:
+            pass
     return cfg
 
 
@@ -70,6 +112,18 @@ def curve(x, pts):
     if x <= x2:
         return y1 + (y2 - y1) * (x - x1) / (x2 - x1)
     return y2
+
+
+def _ramp(x, a, b):
+    return max(0.0, min(1.0, (x - a) / (b - a))) if b > a else float(x >= a)
+
+
+def traction_loss(pkt, c):
+    """0..1: the bigger of driven-wheel spin and the car sliding sideways."""
+    spin = max(getattr(pkt, "spin_slip", [0.0]))
+    slide = getattr(pkt, "slide_deg", 0.0)
+    return max(_ramp(spin, c["spin_start"], c["spin_full"]),
+               _ramp(slide, c["slide_start_deg"], c["slide_full_deg"]))
 
 
 def _clamp(v, lo, hi):
@@ -136,9 +190,7 @@ class FH2Parser(Parser):
         base = _profile(c["throttle_profile"], c["throttle_strength"] * self.throttle.intensity / 0.7)
         spin = max(getattr(pkt, "spin_slip", [0.0]))
         slide = getattr(pkt, "slide_deg", 0.0)
-        ramp = lambda x, a, b: max(0.0, min(1.0, (x - a) / (b - a))) if b > a else float(x >= a)
-        loss = max(ramp(spin, c["spin_start"], c["spin_full"]),
-                   ramp(slide, c["slide_start_deg"], c["slide_full_deg"]))
+        loss = traction_loss(pkt, c)
         if pkt.accel >= c["spin_min_throttle"] * 255 and loss > 0.0:
             amp = _clamp(c["spin_amp_min"] + (c["spin_amp_max"] - c["spin_amp_min"]) * loss, 1, 8)
             freq = c["spin_freq_min"] + (c["spin_freq_max"] - c["spin_freq_min"]) * loss

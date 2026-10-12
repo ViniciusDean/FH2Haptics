@@ -23,6 +23,9 @@ sys.path.insert(0, HERE)
 
 from GameParsers.forza_parser import DataPacket
 from fh2_effects import FH2Parser
+from fh2_audio import Haptics
+from fh2_rumble import Rumble
+from fh2_snapshot import Snapshots
 from Config import BrakeSettings, GearSettings, SurfaceSettings, ThrottleSettings, TachometerSettings
 import preferences
 from mem import Proc, find_pid
@@ -43,10 +46,17 @@ P_THROTTLE, P_BRAKE, P_STEER, P_HANDBRAKE = 0xDF8, 0xDFC, 0xE00, 0xE08
 P_SPEED = 0xE28                # m/s
 P_ROT = 0xE70                  # 3 rows of vec4: right, up, forward
 P_ABS = 0xDBC                  # int32, non-zero while ABS is acting
-P_WHEEL_OMEGA = 0x11BC         # rad/s, 4 wheels (front pair first), stride 0x4B0
+P_OBJ_HIT = 0xE0C              # int32, 1 for one frame when the car hits an object (bollards, signs...)
+P_OBJ_COUNT = 0x11AC           # int32, object-contact counter (steps up on every contact)
+P_WHEEL_OMEGA = 0x11BC         # rad/s, 4 wheels in order FL, FR, RR, RL, stride 0x4B0
 WHEEL_STRIDE = 0x4B0
+DUMP_PHYS = 0x2600                # debug snapshots: physics state bytes kept per frame
+DUMP_CAR_OFF, DUMP_CAR = 0x4000, 0x2000   # ... and this slice of ForzaCar
 W_LONG_SLIP = 0x1E0            # from wheel omega: signed longitudinal slip (+ spin, - lock)
 W_SLIP = 0x280                 # from wheel omega: normalized slip (Turn 10's haptics input)
+W_SUSP = -0xC                  # from wheel omega: suspension position, m (-0.24 extended .. -0.02 compressed)
+W_SURF = 0x144                 # from wheel omega: int surface id under the tire; id >> 8 is the
+                               # surface class (0 asphalt, 1 dirt/gravel, 2 grass), e.g. 12, 268, 524
 
 # --- DualSenseY / DSX UDP --------------------------------------------------
 DSX_ADDR = ("127.0.0.1", 6969)
@@ -123,6 +133,8 @@ class FH2:
     def __init__(self):
         self.p = None
         self.car = None
+        self.keep_raw = False
+        self.raw_dump = None
         self._reset_car()
 
     def _reset_car(self):
@@ -132,6 +144,12 @@ class FH2:
         self.prev_t = 0.0
         self.last_change = 0.0
         self.acc = [0.0, 0.0, 0.0]
+        self.prev_susp = None
+        self.susp_ext = None
+        self.landing = (0.0, 0.0)
+        self.dv_avg = [0.0, 0.0, 0.0]
+        self.road = (0.0, 0.0)
+        self.obj_count = None
 
     def _resolve(self):
         p = self.p
@@ -162,6 +180,8 @@ class FH2:
             self._reset_car()
         raw = self.p.read(phys + BLK, BLK_LEN)
         rb = self.p.read(car + CAR_RPM, 4)
+        if self.keep_raw:                                # debug snapshots: raw memory per frame
+            self.raw_dump = (self.p.read(phys, DUMP_PHYS) or b"", self.p.read(car + DUMP_CAR_OFF, DUMP_CAR) or b"")
         if not raw or len(raw) < BLK_LEN or not rb:
             return DataPacket()
 
@@ -186,12 +206,16 @@ class FH2:
 
         # local acceleration + impact size from the velocity change of one physics step
         smash = 0.0
+        dt = max(1 / 120, min(0.1, now - self.prev_t))
         if fresh and self.prev_vel is not None:
-            dt = max(1 / 120, min(0.1, now - self.prev_t))
             dv = [a - b for a, b in zip(vel, self.prev_vel)]
             dvm = math.sqrt(dot(dv, dv))
             if dvm < 60:                                   # ignore teleports / resets
-                smash = dvm
+                # impact = how far this step's velocity change departs from the
+                # recent trend, so normal braking/cornering doesn't count as a hit
+                jerk = [a - b for a, b in zip(dv, self.dv_avg)]
+                smash = math.sqrt(dot(jerk, jerk))
+                self.dv_avg = [0.7 * a + 0.3 * b for a, b in zip(self.dv_avg, dv)]
                 loc = (dot(dv, right) / dt, dot(dv, up) / dt, dot(dv, fwd) / dt)
                 self.acc = [0.6 * a + 0.4 * b for a, b in zip(self.acc, loc)]
         if fresh:
@@ -210,7 +234,34 @@ class FH2:
             slips.append(s)
             lock.append(s if lon < 0 else 0.0)
             spin.append(s if lon > 0 else 0.0)
-        fl, fr, rl, rr = slips
+        fl, fr, rr, rl = slips
+
+        # landings: a wheel that was hanging near full extension compresses fast.
+        # Reported per side (left = FL+RL, right = FR+RR) as compression speed, m/s
+        susp = [f(P_WHEEL_OMEGA + w * WHEEL_STRIDE + W_SUSP) for w in range(4)]
+        if fresh:
+            self.landing = (0.0, 0.0)
+            if self.prev_susp is not None:
+                if self.susp_ext is None:
+                    self.susp_ext = list(susp)
+                self.susp_ext = [min(e, x) for e, x in zip(self.susp_ext, susp)]
+                hit = [(a - b) / dt if b < e + 0.03 else 0.0
+                       for a, b, e in zip(susp, self.prev_susp, self.susp_ext)]
+                self.landing = (max(hit[0], hit[3]), max(hit[1], hit[2]))
+                # small road detail: how fast the suspension is moving, per side
+                rate = [abs(a - b) / dt for a, b in zip(susp, self.prev_susp)]
+                self.road = (max(rate[0], rate[3]), max(rate[1], rate[2]))
+            self.prev_susp = susp
+
+        surf = [struct.unpack_from("<i", raw, P_WHEEL_OMEGA + w * WHEEL_STRIDE + W_SURF - BLK)[0] for w in range(4)]
+
+        # object hits (bollards, fences, signs): the game's one-frame flag or a new contact
+        count = struct.unpack_from("<i", raw, P_OBJ_COUNT - BLK)[0]
+        obj_hit = struct.unpack_from("<i", raw, P_OBJ_HIT - BLK)[0] == 1 or (
+            self.obj_count is not None and count > self.obj_count)
+        self.obj_count = count
+        if obj_hit:
+            smash = max(smash, 4.0)                        # also gives the triggers a jolt
 
         pkt = DataPacket(
             is_race_on=running,
@@ -227,6 +278,11 @@ class FH2:
         )
         pkt.abs_active = struct.unpack_from("<i", raw, P_ABS - BLK)[0] != 0
         pkt.lock_slip, pkt.spin_slip = lock, spin
+        pkt.landing = self.landing
+        pkt.surface = surf
+        pkt.surf_class = [s >> 8 if s > 0 else 0 for s in surf]
+        pkt.road_l, pkt.road_r = self.road
+        pkt.obj_hit = obj_hit
         # body slip angle (deg): how much the car is sliding sideways
         v_lat, v_long = dot(vel, right), dot(vel, fwd)
         pkt.slide_deg = math.degrees(math.atan2(abs(v_lat), abs(v_long))) if speed > 3 else 0.0
@@ -238,7 +294,19 @@ def main():
     preferences.load(t, b, g, s, tach)
     parser = FH2Parser(t, b, g, s, tach)
     game, dsy = FH2(), DSY()
+    hcfg = parser.cfg["haptics"]
+    haptics = rumble = None
+    if hcfg["enabled"]:
+        haptics = Haptics(volume=hcfg["volume"])
+        if haptics.start():
+            rumble = Rumble(haptics, hcfg, parser.cfg)
+            print("Body haptics: on (DualSense audio device", haptics.device, ")")
+        else:
+            print("Body haptics: DualSense audio device not found (needs USB or DS5 Bridge), triggers only")
+    snaps = Snapshots()
+    game.keep_raw = True
     print("FH2 Haptics: waiting for azimuth.exe ... (Ctrl+C to quit)")
+    print("Debug: press the DualSense mute button or F8 to save a snapshot")
     last_print = 0.0
     idle = False
     try:
@@ -247,6 +315,8 @@ def main():
             if pkt is None:
                 if not idle:
                     dsy.release()
+                    if haptics:
+                        haptics.silence()
                     idle = True
                 time.sleep(2)
                 continue
@@ -254,6 +324,24 @@ def main():
             parser.debug = ""
             l2, r2, r, gg, bb = parser.compute(pkt)[:5]
             dsy.update(l2, r2, (r, gg, bb))
+            if rumble:
+                rumble.update(pkt)
+            saved = snaps.record({
+                "on": pkt.is_race_on, "kmh": round(pkt.speed_kmh, 1), "rpm": round(pkt.current_engine_rpm),
+                "gear": pkt.gear, "thr": pkt.accel, "brk": pkt.brake, "hb": pkt.hand_brake,
+                "slip": [round(x, 3) for x in (pkt.tire_combined_slip_fl, pkt.tire_combined_slip_fr,
+                                               pkt.tire_combined_slip_rl, pkt.tire_combined_slip_rr)],
+                "slide_deg": round(getattr(pkt, "slide_deg", 0.0), 1),
+                "abs": getattr(pkt, "abs_active", False),
+                "impact": round(pkt.smashable_vel_diff, 2),
+                "landing": [round(x, 2) for x in getattr(pkt, "landing", (0.0, 0.0))],
+                "surface": getattr(pkt, "surface", None), "obj_hit": getattr(pkt, "obj_hit", False),
+                "road": [round(getattr(pkt, "road_l", 0.0), 3), round(getattr(pkt, "road_r", 0.0), 3)],
+                "L2": dsy.last.get("l"), "R2": dsy.last.get("r"), "effect": parser.debug.strip(" |"),
+                "body": haptics.state() if rumble else None,
+            }, game.raw_dump)
+            if saved:
+                print(f"\nsnapshot saved: {saved}.png / .json")
             now = time.monotonic()
             if now - last_print > 0.5:
                 last_print = now
@@ -261,12 +349,16 @@ def main():
                 print(f"\r[{st}] {pkt.speed_kmh:6.1f} km/h  {pkt.current_engine_rpm:5.0f}/{game.max_rpm:5.0f} rpm  "
                       f"gear {pkt.gear}  thr {pkt.accel:3d} brk {pkt.brake:3d}  "
                       f"slip F {pkt.front_slip:4.2f} R {pkt.rear_slip:4.2f}  "
-                      f"{'ABS ' if getattr(pkt, 'abs_active', False) else ''}{parser.debug:<28}", end="", flush=True)
+                      f"{'ABS ' if getattr(pkt, 'abs_active', False) else ''}{parser.debug:<28}"
+                      + (" | body " + " ".join(f"{k} {v:.2f}" for k, v in rumble.levels.items()) if rumble else ""),
+                      end="", flush=True)
             time.sleep(1 / 120)
     except KeyboardInterrupt:
         pass
     finally:
         dsy.release()
+        if haptics:
+            haptics.stop()
         print("\nbye")
 
 
