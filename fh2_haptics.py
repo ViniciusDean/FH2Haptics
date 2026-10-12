@@ -8,13 +8,16 @@ owning the controller and the Xbox emulation.
 
 Memory layout found for Azimuth 0.9.7 + FH2 1.0.0.64 (image at 0x140000000).
 """
+import ctypes
 import json
 import math
 import os
 import socket
 import struct
 import sys
+import threading
 import time
+import winsound
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HH_DIR = os.environ.get("HORIZONHAPTICS_DIR") or os.path.join(HERE, "..", "HorizonHaptics")
@@ -22,7 +25,7 @@ sys.path.insert(0, os.path.abspath(HH_DIR))
 sys.path.insert(0, HERE)
 
 from GameParsers.forza_parser import DataPacket
-from fh2_effects import FH2Parser
+from fh2_effects import FH2Parser, effective, load_settings
 from fh2_audio import Haptics
 from fh2_rumble import Rumble
 from fh2_snapshot import Snapshots
@@ -32,6 +35,7 @@ from mem import Proc, find_pid
 
 # --- FH2 memory map -------------------------------------------------------
 PLAYER_ROOT = 0x14365AE10      # static -> object; object+0x1E8 -> player ForzaCar
+SMASH_COUNTER = 0x1434B6294    # static int: objects smashed (bollards, signs...), +1 per object
 ROOT_CAR_OFF = 0x1E8
 FORZACAR_VT = 0x142C5CB80
 PHYS_VT = 0x142EB5E18
@@ -46,8 +50,7 @@ P_THROTTLE, P_BRAKE, P_STEER, P_HANDBRAKE = 0xDF8, 0xDFC, 0xE00, 0xE08
 P_SPEED = 0xE28                # m/s
 P_ROT = 0xE70                  # 3 rows of vec4: right, up, forward
 P_ABS = 0xDBC                  # int32, non-zero while ABS is acting
-P_OBJ_HIT = 0xE0C              # int32, 1 for one frame when the car hits an object (bollards, signs...)
-P_OBJ_COUNT = 0x11AC           # int32, object-contact counter (steps up on every contact)
+P_SHIFT_FLAG = 0xE0C           # int32, 1 for a frame ~80 ms before every upshift (not a hit!)
 P_WHEEL_OMEGA = 0x11BC         # rad/s, 4 wheels in order FL, FR, RR, RL, stride 0x4B0
 WHEEL_STRIDE = 0x4B0
 DUMP_PHYS = 0x2600                # debug snapshots: physics state bytes kept per frame
@@ -149,7 +152,7 @@ class FH2:
         self.landing = (0.0, 0.0)
         self.dv_avg = [0.0, 0.0, 0.0]
         self.road = (0.0, 0.0)
-        self.obj_count = None
+        self.smash_count = None
 
     def _resolve(self):
         p = self.p
@@ -255,11 +258,16 @@ class FH2:
 
         surf = [struct.unpack_from("<i", raw, P_WHEEL_OMEGA + w * WHEEL_STRIDE + W_SURF - BLK)[0] for w in range(4)]
 
-        # object hits (bollards, fences, signs): the game's one-frame flag or a new contact
-        count = struct.unpack_from("<i", raw, P_OBJ_COUNT - BLK)[0]
-        obj_hit = struct.unpack_from("<i", raw, P_OBJ_HIT - BLK)[0] == 1 or (
-            self.obj_count is not None and count > self.obj_count)
-        self.obj_count = count
+        # object hits (bollards, fences, signs): only the game's smashed-objects counter.
+        # (phys+0xE0C and phys+0x11AC looked like contact signals but are gearbox state)
+        obj_hit = False
+        # the game's smashed-objects counter catches the light objects (bollards)
+        # that the car's physics barely registers
+        sb = self.p.read(SMASH_COUNTER, 4)
+        smashed = struct.unpack("<i", sb)[0] if sb else None
+        if smashed is not None and self.smash_count is not None and 0 < smashed - self.smash_count < 50:
+            obj_hit = True
+        self.smash_count = smashed
         if obj_hit:
             smash = max(smash, 4.0)                        # also gives the triggers a jolt
 
@@ -289,77 +297,168 @@ class FH2:
         return pkt
 
 
+class Bridge:
+    """Game -> triggers + body haptics loop. Runs in a thread for the GUI or in the
+    foreground for the console; settings can be changed live with apply()."""
+
+    def __init__(self, raw_cfg=None):
+        self.raw = raw_cfg if raw_cfg is not None else load_settings()
+        self.cfg = effective(self.raw)
+        t, b, g, s, tach = ThrottleSettings(), BrakeSettings(), GearSettings(), SurfaceSettings(), TachometerSettings()
+        preferences.load(t, b, g, s, tach)
+        self.parser = FH2Parser(t, b, g, s, tach, cfg=self.cfg)
+        self.game, self.dsy = FH2(), DSY()
+        self.haptics = self.rumble = None
+        self.snaps = None
+        self.status = {"state": "stopped"}
+        self.messages = []
+        self._stop = threading.Event()
+        self._thread = None
+
+    # -- configuration ---------------------------------------------------------
+    def apply(self, raw_cfg):
+        """Use new settings right away (same dict objects, so every layer sees them)."""
+        self.raw = raw_cfg
+        eff = effective(raw_cfg)
+        haptics_cfg = self.cfg["haptics"]
+        haptics_cfg.clear()
+        haptics_cfg.update(eff.pop("haptics"))
+        for key in [k for k in self.cfg if k != "haptics"]:
+            del self.cfg[key]
+        self.cfg.update(eff)
+        self._apply_haptics()
+
+    def _apply_haptics(self):
+        h, c = self.haptics, self.cfg["haptics"]
+        if h:
+            h.volume = c["volume"]
+            h.duck_depth, h.duck_s = c["hit_duck"], c["hit_duck_s"]
+            h.tap_hz, h.tap_s = c["tap_hz"], c["tap_s"]
+            h.tap_square, h.tap_pulses = c["tap_square"], c["tap_pulses"]
+
+    def _say(self, text):
+        self.messages.append(text)
+        del self.messages[:-20]
+
+    # -- lifecycle -------------------------------------------------------------
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self.run, name="fh2-bridge", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=3)
+
+    @property
+    def running(self):
+        return bool(self._thread and self._thread.is_alive())
+
+    def run(self, console=False):
+        c = self.cfg
+        # WASAPI needs COM initialized on the thread that opens the audio stream
+        com = ctypes.windll.ole32.CoInitializeEx(None, 0) in (0, 1)
+        if c["haptics"]["enabled"]:
+            self.haptics = Haptics()
+            self._apply_haptics()
+            if self.haptics.start():
+                self.rumble = Rumble(self.haptics, c["haptics"], c)
+                self._say("Body haptics: on")
+            else:
+                err = self.haptics.error
+                self.haptics = None
+                self._say("Body haptics: DualSense audio device not available (needs USB or DS5 Bridge), "
+                          "triggers only" + (f" - {err}" if err else ""))
+        self.snaps = Snapshots()
+        self.game.keep_raw = True
+        self._say("Waiting for azimuth.exe ...")
+        if console:
+            print("\n".join(self.messages))
+            print("Debug: press the DualSense mute button or F8 to save a snapshot")
+        last_print = last_beep = 0.0
+        idle = False
+        self.status = {"state": "waiting"}
+        try:
+            while not self._stop.is_set():
+                pkt = self.game.read()
+                if pkt is None:
+                    if not idle:
+                        self.dsy.release()
+                        if self.haptics:
+                            self.haptics.silence()
+                        idle = True
+                    self.status = {"state": "waiting"}
+                    self._stop.wait(2)
+                    continue
+                idle = False
+                self.parser.debug = ""
+                l2, r2, r, gg, bb = self.parser.compute(pkt)[:5]
+                self.dsy.update(l2, r2, (r, gg, bb))
+                if self.rumble:
+                    self.rumble.update(pkt)
+                saved = self.snaps.record(self._frame(pkt), self.game.raw_dump)
+                if (c["debug_beep_on_hit"] and getattr(pkt, "obj_hit", False)
+                        and time.monotonic() - last_beep > 0.06):
+                    last_beep = time.monotonic()
+                    threading.Thread(target=winsound.Beep, args=(2000, 50), daemon=True).start()
+                if saved:
+                    self._say(f"Snapshot saved: {saved}.png")
+                self.status = {
+                    "state": "running" if pkt.is_race_on else "paused",
+                    "kmh": pkt.speed_kmh, "rpm": pkt.current_engine_rpm, "gear": pkt.gear,
+                    "effect": self.parser.debug.strip(" |"),
+                    "body": dict(self.rumble.levels) if self.rumble else {},
+                }
+                now = time.monotonic()
+                if console and now - last_print > 0.5:
+                    last_print = now
+                    if saved:
+                        print(f"\nsnapshot saved: {saved}.png / .json")
+                    st = "ON " if pkt.is_race_on else "off"
+                    print(f"\r[{st}] {pkt.speed_kmh:6.1f} km/h  {pkt.current_engine_rpm:5.0f}/{self.game.max_rpm:5.0f} rpm  "
+                          f"gear {pkt.gear}  thr {pkt.accel:3d} brk {pkt.brake:3d}  "
+                          f"slip F {pkt.front_slip:4.2f} R {pkt.rear_slip:4.2f}  "
+                          f"{'ABS ' if getattr(pkt, 'abs_active', False) else ''}{self.parser.debug:<28}"
+                          + (" | body " + " ".join(f"{k} {v:.2f}" for k, v in self.rumble.levels.items())
+                             if self.rumble else ""),
+                          end="", flush=True)
+                time.sleep(1 / 120)
+        finally:
+            self.dsy.release()
+            if self.haptics:
+                self.haptics.stop()
+            self.haptics = self.rumble = None
+            self.status = {"state": "stopped"}
+            if com:
+                ctypes.windll.ole32.CoUninitialize()
+
+    def _frame(self, pkt):
+        return {
+            "on": pkt.is_race_on, "kmh": round(pkt.speed_kmh, 1), "rpm": round(pkt.current_engine_rpm),
+            "gear": pkt.gear, "thr": pkt.accel, "brk": pkt.brake, "hb": pkt.hand_brake,
+            "slip": [round(x, 3) for x in (pkt.tire_combined_slip_fl, pkt.tire_combined_slip_fr,
+                                           pkt.tire_combined_slip_rl, pkt.tire_combined_slip_rr)],
+            "slide_deg": round(getattr(pkt, "slide_deg", 0.0), 1),
+            "abs": getattr(pkt, "abs_active", False),
+            "impact": round(pkt.smashable_vel_diff, 2),
+            "landing": [round(x, 2) for x in getattr(pkt, "landing", (0.0, 0.0))],
+            "surface": getattr(pkt, "surface", None), "obj_hit": getattr(pkt, "obj_hit", False),
+            "road": [round(getattr(pkt, "road_l", 0.0), 3), round(getattr(pkt, "road_r", 0.0), 3)],
+            "L2": self.dsy.last.get("l"), "R2": self.dsy.last.get("r"), "effect": self.parser.debug.strip(" |"),
+            "body": self.haptics.state() if self.rumble else None,
+        }
+
+
 def main():
-    t, b, g, s, tach = ThrottleSettings(), BrakeSettings(), GearSettings(), SurfaceSettings(), TachometerSettings()
-    preferences.load(t, b, g, s, tach)
-    parser = FH2Parser(t, b, g, s, tach)
-    game, dsy = FH2(), DSY()
-    hcfg = parser.cfg["haptics"]
-    haptics = rumble = None
-    if hcfg["enabled"]:
-        haptics = Haptics(volume=hcfg["volume"])
-        if haptics.start():
-            rumble = Rumble(haptics, hcfg, parser.cfg)
-            print("Body haptics: on (DualSense audio device", haptics.device, ")")
-        else:
-            print("Body haptics: DualSense audio device not found (needs USB or DS5 Bridge), triggers only")
-    snaps = Snapshots()
-    game.keep_raw = True
-    print("FH2 Haptics: waiting for azimuth.exe ... (Ctrl+C to quit)")
-    print("Debug: press the DualSense mute button or F8 to save a snapshot")
-    last_print = 0.0
-    idle = False
+    bridge = Bridge()
     try:
-        while True:
-            pkt = game.read()
-            if pkt is None:
-                if not idle:
-                    dsy.release()
-                    if haptics:
-                        haptics.silence()
-                    idle = True
-                time.sleep(2)
-                continue
-            idle = False
-            parser.debug = ""
-            l2, r2, r, gg, bb = parser.compute(pkt)[:5]
-            dsy.update(l2, r2, (r, gg, bb))
-            if rumble:
-                rumble.update(pkt)
-            saved = snaps.record({
-                "on": pkt.is_race_on, "kmh": round(pkt.speed_kmh, 1), "rpm": round(pkt.current_engine_rpm),
-                "gear": pkt.gear, "thr": pkt.accel, "brk": pkt.brake, "hb": pkt.hand_brake,
-                "slip": [round(x, 3) for x in (pkt.tire_combined_slip_fl, pkt.tire_combined_slip_fr,
-                                               pkt.tire_combined_slip_rl, pkt.tire_combined_slip_rr)],
-                "slide_deg": round(getattr(pkt, "slide_deg", 0.0), 1),
-                "abs": getattr(pkt, "abs_active", False),
-                "impact": round(pkt.smashable_vel_diff, 2),
-                "landing": [round(x, 2) for x in getattr(pkt, "landing", (0.0, 0.0))],
-                "surface": getattr(pkt, "surface", None), "obj_hit": getattr(pkt, "obj_hit", False),
-                "road": [round(getattr(pkt, "road_l", 0.0), 3), round(getattr(pkt, "road_r", 0.0), 3)],
-                "L2": dsy.last.get("l"), "R2": dsy.last.get("r"), "effect": parser.debug.strip(" |"),
-                "body": haptics.state() if rumble else None,
-            }, game.raw_dump)
-            if saved:
-                print(f"\nsnapshot saved: {saved}.png / .json")
-            now = time.monotonic()
-            if now - last_print > 0.5:
-                last_print = now
-                st = "ON " if pkt.is_race_on else "off"
-                print(f"\r[{st}] {pkt.speed_kmh:6.1f} km/h  {pkt.current_engine_rpm:5.0f}/{game.max_rpm:5.0f} rpm  "
-                      f"gear {pkt.gear}  thr {pkt.accel:3d} brk {pkt.brake:3d}  "
-                      f"slip F {pkt.front_slip:4.2f} R {pkt.rear_slip:4.2f}  "
-                      f"{'ABS ' if getattr(pkt, 'abs_active', False) else ''}{parser.debug:<28}"
-                      + (" | body " + " ".join(f"{k} {v:.2f}" for k, v in rumble.levels.items()) if rumble else ""),
-                      end="", flush=True)
-            time.sleep(1 / 120)
+        bridge.run(console=True)
     except KeyboardInterrupt:
         pass
-    finally:
-        dsy.release()
-        if haptics:
-            haptics.stop()
-        print("\nbye")
+    print("\nbye")
 
 
 if __name__ == "__main__":

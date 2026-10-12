@@ -7,7 +7,7 @@ landing thumps are extra layers on top.
 """
 import time
 
-from fh2_effects import DEFAULTS, curve, traction_loss
+from fh2_effects import curve, traction_loss
 
 # (x, y) points from ControllerRumble.xml, <Controller> profile
 TRACTION_FRONT = {"heavy": ((1.4, 0.0), (2.2, 0.20), (3.0, 0.40)),
@@ -15,27 +15,14 @@ TRACTION_FRONT = {"heavy": ((1.4, 0.0), (2.2, 0.20), (3.0, 0.40)),
 TRACTION_REAR = {"heavy": ((1.4, 0.0), (2.25, 0.18), (3.0, 0.35))}
 BUMPINESS = {"heavy": ((0.0, 0.0), (0.01, 0.10), (0.12, 0.40)),
              "light": ((0.0, 0.0), (0.055, 0.0), (0.12, 0.20))}
-WORLD_HIT = {"heavy": ((20.0, 0.0), (1.0, 0.8), (375.0, 1.6)),      # x0 > x1 in the file; see _hit()
-             "light": ((0.0, 0.0), (1.0, 0.8), (375.0, 1.6))}
-WORLD_HIT_TIME = ((0.0, 0.5), (25.0, 0.4), (500.0, 0.78))
 SHIFT_LIGHT = 0.4
-
-
-
-def _hit(x, pts):
-    (x0, _), (x1, y1), (x2, y2) = pts
-    if x <= 0:
-        return 0.0
-    if x <= x1:
-        return y1 * x / x1
-    return curve(x, ((x1 * 0.999, 0.0), (x1, y1), (x2, y2)))
 
 
 class Rumble:
     def __init__(self, haptics, cfg, trigger_cfg):
+        """cfg / trigger_cfg are used by reference, so changes apply live."""
         self.h = haptics
-        self.cfg = dict(DEFAULTS["haptics"])
-        self.cfg.update(cfg or {})
+        self.cfg = cfg
         self.tcfg = trigger_cfg
         self._last_gear = 0
         self._prev_susp = None
@@ -93,8 +80,8 @@ class Rumble:
         # texture already does, so the detail is only allowed to add a little
         det_l = detail(getattr(pkt, "road_l", 0.0)) * c["detail"] * (1.0 if not tx_l else c["detail_offroad"])
         det_r = detail(getattr(pkt, "road_r", 0.0)) * c["detail"] * (1.0 if not tx_r else c["detail_offroad"])
-        tex_l = min(1.0, tx_l * pace + det_l)
-        tex_r = min(1.0, tx_r * pace + det_r)
+        tex_l = min(c["texture_max"], tx_l * pace + det_l)
+        tex_r = min(c["texture_max"], tx_r * pace + det_r)
         h.set("texture", tex_l, tex_r)
 
         # ABS pulse on the body
@@ -106,31 +93,35 @@ class Rumble:
         h.set("heavy", heavy_l * rm, heavy_r * rm)
         h.set("light", light_l * rm, light_r * rm)
 
-        # collisions (Turn 10 CarToWorld curves), directional
+        # collisions (walls, cars), directional
         if pkt.smashable_vel_diff > c["hit_min"]:
-            x = pkt.smashable_vel_diff * c["hit_scale"]
-            amp = min(1.0, _hit(x, WORLD_HIT["heavy"])) * rm
-            dur = curve(x, WORLD_HIT_TIME)
+            # crashes: a heavy square-wave hit, full strength from a medium impact,
+            # both sides (the struck side a bit stronger), everything else silenced
+            amp = min(1.0, 0.5 + pkt.smashable_vel_diff / 6.0) * c["crash"]
+            dur = c["crash_s"] * min(1.5, 0.7 + pkt.smashable_vel_diff / 10.0)
             side = pkt.acceleration_x
-            left = amp * (1.0 if side <= 5 else 0.4)
-            right = amp * (1.0 if side >= -5 else 0.4)
-            h.thump(left, right, dur)
+            left = amp * (1.0 if side <= 5 else 0.7)
+            right = amp * (1.0 if side >= -5 else 0.7)
+            if amp > 0:
+                h.thump(left, right, dur, duck=True, square=True, hold_s=c["crash_hold_s"])
 
         # object hits (bollards, fences, signs): the game's own contact flag
         if getattr(pkt, "obj_hit", False):
-            amp = min(1.0, 0.45 + pkt.speed / 60.0) * c["object_hit"]
-            h.thump(amp, amp, 0.2)
+            amp = min(1.0, 0.75 + pkt.speed / 100.0) * c["object_hit"]
+            if amp > 0:
+                h.tap(amp, amp)
 
         # landings: a hanging wheel compressing fast
         sl, sr = getattr(pkt, "landing", (0.0, 0.0))
-        if max(sl, sr) > c["landing_speed"]:
+        if max(sl, sr) > c["landing_speed"] and c["landing"] > 0:
             k = c["landing"]
             h.thump(min(1.0, sl / (2 * c["landing_speed"])) * k,
                     min(1.0, sr / (2 * c["landing_speed"])) * k, 0.15)
 
         # gear change (Turn 10 OnShift: light motor 0.4)
         if self._last_gear > 0 and pkt.gear > 0 and pkt.gear != self._last_gear and pkt.speed > 2:
-            h.thump(SHIFT_LIGHT * rm, SHIFT_LIGHT * rm, 0.08)
+            if c["shift"] > 0:
+                h.thump(SHIFT_LIGHT * rm * c["shift"], SHIFT_LIGHT * rm * c["shift"], 0.08)
         self._last_gear = pkt.gear
 
         # engine growl

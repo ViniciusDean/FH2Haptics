@@ -15,7 +15,7 @@ FH2 never had "Data Out" telemetry. This project reads the player car's physics 
 | R2 | Wheelspin or rear stepping out | Stronger and faster vibration as traction loss grows; the trigger gets lighter |
 | R2 | Gear change | Short kick |
 | L2/R2 | Collisions | Hard jolt |
-| Lightbar | — | Tachometer (green → red, flashes at the limiter) |
+| Lightbar | — | RPM light: configurable start point, shift-flash point, flash speed, brightness and colors |
 
 Data used: speed, RPM, gear, throttle, brake, handbrake, steering, velocity vector, orientation, ABS flag, and each tire's normalized slip as computed by the game itself. The lock-up vibration curves follow the game's `media/ControllerHaptics.xml`, which is the Xbox One impulse-trigger configuration.
 
@@ -28,7 +28,8 @@ The DualSense's voice-coil actuators are driven through its audio channels with 
 | Heavy / light rumble (Turn 10) | Traction loss, front tires sliding, surface bumpiness, collisions, gear changes |
 | Surface texture | The game's per-wheel surface id: none on asphalt, rough on dirt/gravel, softer on grass. Left and right wheels drive the left and right actuators |
 | Road detail | Fast suspension movement (small bumps on asphalt) |
-| Impacts | Hits against the trend of the car's velocity, plus the game's own object-contact flag (bollards, fences, signs) |
+| Crashes | Velocity change against the trend (walls, cars): a heavy square-wave hit that silences everything else; both triggers shake too |
+| Object hits | The game's own smashed-objects counter (bollards, signs, fences): a short heavy knock per object |
 | Landings | A hanging wheel compressing fast |
 | ABS | Pulse on the body while ABS acts |
 | Engine | Low growl following RPM and throttle |
@@ -55,29 +56,36 @@ If HorizonHaptics lives somewhere else, set the `HORIZONHAPTICS_DIR` environment
 
 ## Usage
 
-1. Start DualSenseY and the game through Azimuth.
-2. Double-click `run.bat`.
-3. The console shows speed, RPM, gear, slip, the active trigger effect and the body haptics levels.
+Double-click **`FH2 Haptics.vbs`** (or `run.bat`). It opens the settings window, without any console window:
 
-`test_modes.py` plays each DSY trigger mode in turn, to check that the connection works.
+- **Start / Stop** runs the bridge; it waits for the game if it isn't running yet.
+- **Start game + FH2 Haptics**: pick your `azimuth.exe` once, then this launches the game and the bridge together.
+- **Triggers** and **Body haptics** tabs: one slider per effect, from **0% (off)** to **300% (absurd)**. 100% is the tuned default. Changes apply live while you drive and are saved to `settings.json`.
+- **Debug** tab: beep on every object hit, lock the triggers on hits, open the snapshots folder.
+- **RPM light** tab: where the lightbar comes on and starts flashing (shift point), flash speed, brightness and the colors.
+- The status line shows whether body haptics are on; the **Debug** tab has the details if the controller's audio device can't be opened.
+- The window is in Portuguese or English (bottom-right).
+
+`run_console.bat` runs the same bridge in a console with a live status line instead of the window.
+
+`test_modes.py` plays each DSY trigger mode in turn, to check that the connection works. `test_taps.py` plays several object-hit knock variants so you can pick one by feel.
 
 ### Debug snapshots
 
-Press the DualSense **mute button** (or **F8**) while driving. The bridge saves to `snapshots/` a screenshot, the last 4 seconds of everything it read and sent (car data, trigger effects, body haptics levels) frame by frame as JSON, and the raw car memory of those frames (`.npz`). That's how the surface ids and the object-hit flag were found.
+Press the DualSense **mute button** (or **F8**) while driving. The bridge saves to `snapshots/` a screenshot, the last 4 seconds of everything it read and sent (car data, trigger effects, body haptics levels) frame by frame as JSON, and the raw car memory of those frames (`.npz`). That's how the surface ids and the object-hit counter were found.
 
 ## Tuning
 
-A `settings.json` with every parameter is created on the first run. The main ones:
+The sliders cover the everyday tuning. `settings.json` holds every underlying parameter for finer control (the sliders multiply these), for example:
 
 - `brake_profile`: brake pedal stiffness, zone by zone (0–8, top to bottom of the travel)
-- `abs_freq`, `abs_amp`, `abs_wall`: ABS pulsing
-- `spin_start` / `spin_full`: wheelspin where the R2 vibration starts and where it reaches full strength
-- `slide_start_deg` / `slide_full_deg`: sideways slide angle where the vibration starts and where it reaches full strength
-- `spin_amp_min` / `spin_amp_max`, `spin_freq_min` / `spin_freq_max`: R2 vibration strength and frequency
-- `shift_kick`: turns the gear-change kick on or off
-- `haptics`: body haptics. `volume`, and one level per layer (`rumble`, `traction`, `understeer`, `detail`, `object_hit`, `landing`, `abs`, `engine`); `surfaces` sets the texture and bumpiness per surface class; `enabled: false` turns body haptics off
+- `abs_freq`, `abs_wall`: ABS pulse frequency and the firm zones at the bottom
+- `spin_start` / `spin_full`, `slide_start_deg` / `slide_full_deg`: where the R2 traction-loss vibration starts and peaks
+- `haptics.surfaces`: texture and bumpiness per surface class (dirt/gravel, grass)
+- `haptics.tap_*`: the object-hit knock (frequency, length, square wave, double knock)
+- `haptics.crash_*`: crash length and how long it stays at full strength
 
-Overall intensity and the lightbar follow HorizonHaptics' saved settings (`~/.config/horizonhaptics/settings.json`).
+Trigger intensity also follows HorizonHaptics' saved settings (`~/.config/horizonhaptics/settings.json`); the RPM light is configured in the window (`rpm_light` in `settings.json`).
 
 ## How it works
 
@@ -85,6 +93,7 @@ Overall intensity and the lightbar follow HorizonHaptics' saved settings (`~/.co
 - Offsets were found through RTTI, correlation with the real trigger positions, and analysis of recorded driving. They are all documented at the top of `fh2_haptics.py`.
 - Effects are sent in the native Sony modes DSY accepts over UDP: `MULTIPLE_POSITION_FEEDBACK`, `MULTIPLE_POSITION_VIBRATION` and `VIBRATION`.
 - Body haptics go to the DualSense's 4-channel WASAPI endpoint (channels 3/4 = left/right actuator), at 48 kHz in 10 ms blocks.
+- Object hits come from a static counter in the game image (`0x1434B6294`, objects smashed), found with a guided before/after memory scan.
 
 Other game or Azimuth versions will most likely move the addresses.
 
