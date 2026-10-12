@@ -312,6 +312,8 @@ class Bridge:
         self.snaps = None
         self.status = {"state": "stopped"}
         self.messages = []
+        self._haptics_failed = False
+        self._haptic_blocks = 0
         self._stop = threading.Event()
         self._thread = None
 
@@ -361,17 +363,7 @@ class Bridge:
         c = self.cfg
         # WASAPI needs COM initialized on the thread that opens the audio stream
         com = ctypes.windll.ole32.CoInitializeEx(None, 0) in (0, 1)
-        if c["haptics"]["enabled"]:
-            self.haptics = Haptics()
-            self._apply_haptics()
-            if self.haptics.start():
-                self.rumble = Rumble(self.haptics, c["haptics"], c)
-                self._say("Body haptics: on")
-            else:
-                err = self.haptics.error
-                self.haptics = None
-                self._say("Body haptics: DualSense audio device not available (needs USB or DS5 Bridge), "
-                          "triggers only" + (f" - {err}" if err else ""))
+        self._open_haptics(first=True)
         self.snaps = Snapshots()
         self.game.keep_raw = True
         self._say("Waiting for azimuth.exe ...")
@@ -379,10 +371,14 @@ class Bridge:
             print("\n".join(self.messages))
             print("Debug: press the DualSense mute button or F8 to save a snapshot")
         last_print = last_beep = 0.0
+        next_check = time.monotonic() + 2.0
         idle = False
         self.status = {"state": "waiting"}
         try:
             while not self._stop.is_set():
+                if time.monotonic() >= next_check:
+                    next_check = time.monotonic() + 2.0
+                    self._check_haptics()
                 pkt = self.game.read()
                 if pkt is None:
                     if not idle:
@@ -434,6 +430,45 @@ class Bridge:
             self.status = {"state": "stopped"}
             if com:
                 ctypes.windll.ole32.CoUninitialize()
+
+    def _open_haptics(self, first=False):
+        """Open the DualSense audio endpoint for body haptics (if enabled)."""
+        c = self.cfg
+        if not c["haptics"]["enabled"]:
+            return
+        h = Haptics()
+        self.haptics = h
+        self._apply_haptics()
+        if h.start():
+            self.rumble = Rumble(h, c["haptics"], c)
+            self._haptic_blocks = h.blocks
+            self._say("Body haptics: on")
+        else:
+            self.haptics = self.rumble = None
+            if first or not self._haptics_failed:
+                self._say("Body haptics: DualSense audio device not available (needs USB or DS5 Bridge), "
+                          "retrying" + (f" - {h.error}" if h.error else ""))
+        self._haptics_failed = self.haptics is None
+
+    def _check_haptics(self):
+        """Watchdog: reopen the audio stream if it never opened, or died (controller
+        reconnected, DS5 Bridge re-enumerated, device switched off...)."""
+        if not self.cfg["haptics"]["enabled"]:
+            if self.haptics:
+                self.haptics.stop()
+                self.haptics = self.rumble = None
+            return
+        h = self.haptics
+        if h is not None:
+            stream = h._stream
+            alive = stream is not None and stream.active and h.blocks != self._haptic_blocks
+            self._haptic_blocks = h.blocks
+            if alive:
+                return
+            self._say("Body haptics: audio stream stopped, reopening")
+            h.stop()
+            self.haptics = self.rumble = None
+        self._open_haptics()
 
     def _frame(self, pkt):
         return {
