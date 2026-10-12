@@ -25,7 +25,7 @@ Dados usados: velocidade, RPM, marcha, acelerador, freio, freio de mão, volante
 
 - Windows 10/11
 - Forza Horizon 2 **1.0.0.64**, dump da **sua própria cópia**, rodando no **Azimuth 0.9.7**
-- DualSense **no cabo USB**
+- DualSense **no cabo USB** ou **sem fio por um adaptador que se apresenta como USB**. Eu uso o **[DS5 Bridge](https://github.com/SundayMoments/DS5_Bridge)** num **Raspberry Pi Pico 2 W**. Pelo Bluetooth comum do Windows, a vibração por áudio não funciona, porque ela precisa do modo USB.
 - [DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2) aberto, com o servidor UDP na porta **6969** (padrão)
 - [HorizonHaptics](https://github.com/haritha99ch/HorizonHaptics) clonado **na mesma pasta pai** deste projeto. A lógica base de efeitos e a lightbar vêm dele. Rode o `run.bat` dele uma vez para criar o `.venv` e depois **feche-o**, porque ele escreve no controle direto e brigaria com o DSY.
 
@@ -70,12 +70,13 @@ Outras versões do jogo ou do Azimuth provavelmente mudam os endereços.
 
 - **[Azimuth](https://almost-there-games.itch.io/azimuth)**, de Almost There Games: o launcher que roda o FH2 de Xbox One no PC. Sem ele nada disso existe.
 - **[DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2)**, de WujekFoliarz: emulação de controle e a API UDP usada para controlar os gatilhos.
+- **[DS5 Bridge](https://github.com/SundayMoments/DS5_Bridge)**, de SundayMoments (baseado no [DS5Dongle](https://github.com/awalol/DS5Dongle), de awalol): adaptador sem fio com Raspberry Pi Pico 2 W que faz o DualSense funcionar como se estivesse no USB.
 - **[HorizonHaptics](https://github.com/haritha99ch/HorizonHaptics)**, de Haritha Rathnayake (MIT): lógica base de efeitos, lightbar e configurações.
 - **Turn 10 / Playground Games**: curvas originais de vibração dos gatilhos (`ControllerHaptics.xml`).
 
 ## Aviso
 
-Projeto de fãs, sem afiliação com Microsoft, Playground Games, Turn 10, Almost There Games ou os autores do DualSenseY. Nenhum arquivo do jogo é distribuído aqui. Use apenas com uma cópia que você possui. Forza Horizon é marca registrada da Microsoft.
+Projeto de fãs, sem afiliação com Microsoft, Playground Games, Turn 10, Almost There Games ou os autores do DualSenseY e do DS5 Bridge. Nenhum arquivo do jogo é distribuído aqui. Use apenas com uma cópia que você possui. Forza Horizon é marca registrada da Microsoft.
 
 ## Licença
 
