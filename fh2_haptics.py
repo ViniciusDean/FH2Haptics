@@ -20,6 +20,7 @@ import time
 import winsound
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(HERE, "fh2haptics.log")
 HH_DIR = os.environ.get("HORIZONHAPTICS_DIR") or os.path.join(HERE, "..", "HorizonHaptics")
 sys.path.insert(0, os.path.abspath(HH_DIR))
 sys.path.insert(0, HERE)
@@ -29,6 +30,7 @@ from fh2_effects import FH2Parser, effective, load_settings
 from fh2_audio import Haptics
 from fh2_rumble import Rumble
 from fh2_snapshot import Snapshots
+import fh2_volume
 from Config import BrakeSettings, GearSettings, SurfaceSettings, ThrottleSettings, TachometerSettings
 import preferences
 from mem import Proc, find_pid
@@ -341,6 +343,28 @@ class Bridge:
     def _say(self, text):
         self.messages.append(text)
         del self.messages[:-20]
+        self._log(text)
+
+    def _log(self, text):
+        """Append to fh2haptics.log next to the scripts (kept under ~1 MB)."""
+        try:
+            if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 1_000_000:
+                os.replace(LOG_FILE, LOG_FILE + ".old")
+            with open(LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text + "\n")
+        except OSError:
+            pass
+
+    def _health(self):
+        """One log line describing the body-haptics stream."""
+        h = self.haptics
+        if not self.cfg["haptics"]["enabled"]:
+            return "health: body haptics disabled in settings"
+        if h is None:
+            return "health: body haptics NOT open"
+        s = h._stream
+        return (f"health: device {h.device} ch {h.channels} active {bool(s and s.active)} "
+                f"blocks {h.blocks} layers {h.state()} game {self.status.get('state')}")
 
     # -- lifecycle -------------------------------------------------------------
     def start(self):
@@ -372,6 +396,7 @@ class Bridge:
             print("Debug: press the DualSense mute button or F8 to save a snapshot")
         last_print = last_beep = 0.0
         next_check = time.monotonic() + 2.0
+        next_health = time.monotonic() + 3.0
         idle = False
         self.status = {"state": "waiting"}
         try:
@@ -379,6 +404,9 @@ class Bridge:
                 if time.monotonic() >= next_check:
                     next_check = time.monotonic() + 2.0
                     self._check_haptics()
+                    if time.monotonic() >= next_health:
+                        next_health = time.monotonic() + 10.0
+                        self._log(self._health())
                 pkt = self.game.read()
                 if pkt is None:
                     if not idle:
@@ -440,6 +468,7 @@ class Bridge:
         self.haptics = h
         self._apply_haptics()
         if h.start():
+            self._keep_audible()
             self.rumble = Rumble(h, c["haptics"], c)
             self._haptic_blocks = h.blocks
             self._say("Body haptics: on")
@@ -450,9 +479,23 @@ class Bridge:
                           "retrying" + (f" - {h.error}" if h.error else ""))
         self._haptics_failed = self.haptics is None
 
+    def _keep_audible(self):
+        """The haptics go through the DualSense speaker endpoint, so a muted or 0%
+        endpoint silences them; put it back (other apps sometimes mute it)."""
+        c = self.cfg["haptics"]
+        if not c["enabled"] or not c["keep_device_audible"]:
+            return
+        try:
+            fixes = fh2_volume.ensure_audible(c["device_volume"])
+        except Exception as exc:                     # never let this stop the bridge
+            fixes = [f"check failed: {exc}"]
+        if fixes:
+            self._say("DualSense speaker endpoint: " + ", ".join(fixes))
+
     def _check_haptics(self):
         """Watchdog: reopen the audio stream if it never opened, or died (controller
         reconnected, DS5 Bridge re-enumerated, device switched off...)."""
+        self._keep_audible()
         if not self.cfg["haptics"]["enabled"]:
             if self.haptics:
                 self.haptics.stop()

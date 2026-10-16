@@ -41,7 +41,7 @@ The DualSense's voice-coil actuators are driven through its audio channels with 
 ## Requirements
 
 - Windows 10/11
-- Forza Horizon 2 **1.0.0.64**, dumped from **your own copy**, running on **Azimuth 0.9.7**
+- Forza Horizon 2 **1.0.0.64**, dumped from **your own copy**, running on **Azimuth 0.9.7 or 0.9.9**
 - DualSense **over USB**, or **wireless through an adapter that shows up as USB**. I use **[DS5 Bridge](https://github.com/SundayMoments/DS5_Bridge)** on a **Raspberry Pi Pico 2 W**. Over plain Windows Bluetooth, audio haptics don't work because they need USB mode.
 - [DualSenseY](https://github.com/WujekFoliarz/DualSenseY-v2) running with its UDP server on port **6969** (default)
 - [HorizonHaptics](https://github.com/haritha99ch/HorizonHaptics) cloned **next to this project**. The base effect logic and the lightbar come from it. Run its `run.bat` once to create the `.venv`, then **close it**: it writes to the controller directly and would fight with DSY.
@@ -96,6 +96,11 @@ Trigger intensity also follows HorizonHaptics' saved settings (`~/.config/horizo
 - Object hits come from a static counter in the game image (`0x1434B6294`, objects smashed), found with a guided before/after memory scan.
 
 Other game or Azimuth versions will most likely move the addresses.
+
+## Troubleshooting
+
+- **Triggers work but no body haptics.** The haptics are audio sent to the Windows endpoint "Speakers (DualSense Wireless Controller)", so they follow its volume and mute. Some controller apps mute it or set it to 0% (for example a DualSenseY profile with *Speaker volume 0*). The bridge checks this every 2 seconds and restores it (`haptics.keep_device_audible`, `haptics.device_volume`), but it's best to set that app's speaker volume above 0 so they don't fight over it.
+- **Anything else.** `fh2haptics.log` next to the scripts records what the bridge does, with a body-haptics health line every 10 seconds.
 
 ## Credits
 

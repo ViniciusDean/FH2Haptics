@@ -112,7 +112,7 @@ class Haptics:
                 self._stream.start()
                 return True
             except Exception as exc:                 # sounddevice.PortAudioError and friends
-                self.error = str(exc)
+                self.error = f"device {self.device}: {exc}"
                 self._stream = None
                 time.sleep(0.5 + attempt * 0.5)
                 self.device, self.channels = find_dualsense()

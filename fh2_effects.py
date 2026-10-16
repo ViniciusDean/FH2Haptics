@@ -58,6 +58,7 @@ DEFAULTS = {
     },
     "game_exe": "",                  # azimuth.exe, for "start with the game"
     "language": "",                  # UI language: "pt", "en" or "" (system)
+    "autostart": True,               # start the bridge as soon as the window opens
     # per-effect strength, 0 = off, 1 = default, 3 = absurd (see LEVELS)
     "levels": {},
     # debug: lock both triggers solid for a moment on every object hit
@@ -68,6 +69,8 @@ DEFAULTS = {
     "haptics": {
         "enabled": True,
         "volume": 1.0,                 # master volume
+        "keep_device_audible": True,   # unmute / restore the DualSense speaker endpoint if something mutes it
+        "device_volume": 1.0,          # ... to this Windows volume (the haptics follow it)
         "rumble": 1.0,                 # Turn 10 rumble layers (traction, bumps, hits, shift)
         "engine": 0.12,                # engine growl (kept low so it does not mask the rest)
         "engine_hz_idle": 30.0,        # growl frequency at idle ...

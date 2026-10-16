@@ -184,6 +184,8 @@ class Window(QMainWindow):
         self._build()
         self._status_timer = QTimer(self, interval=200, timeout=self._refresh_status)
         self._status_timer.start()
+        if self.raw.get("autostart", True):
+            QTimer.singleShot(300, self.start)
 
     # -- layout ------------------------------------------------------------------
     def _build(self):
